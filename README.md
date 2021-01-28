@@ -123,10 +123,13 @@ If you use `strat_models`, please cite the following papers:
 
 ```
 @article{strat_models,
-    author       = {Tuck, J. and Barratt, S. and Boyd, S.},
+    author       = {Jonathan Tuck and Shane Barratt and Stephen Boyd},
     title        = {A distributed method for fitting Laplacian regularized stratified models},
     journal      = {arXiv preprint arXiv:1904.12017},
-    year         = {2019},
+    title        = {A Distributed Method for Fitting {L}aplacian Regularized Stratified Models},
+    journal      = {Journal of Machine Learning Research},
+    year         = {2021},
+    note         = {To appear}
 }
 
 @article{eigen_strat_models,
@@ -135,3 +138,19 @@ If you use `strat_models`, please cite the following papers:
 	journal = {Optimization and Engineering},
 	year = {2021},
 }
+
+@article{cov_strat_models,
+    author       = {Jonathan Tuck and Stephen Boyd},
+    title        = {Fitting {L}aplacian Regularized Stratified {G}aussian Models},
+    journal      = {arXiv},
+    year         = {2020},
+    note         = {Manuscript}
+}
+
+@article{mm_dist_lapl,
+    author       = {Jonathan Tuck and David Hallac and Stephen Boyd},
+    title        = {Distributed Majorization-Minimization for {L}aplacian Regularized Problems},
+    journal      = {IEEE/CAA Journal of Automatica Sinica},
+    year         = {2019},
+}
+```
