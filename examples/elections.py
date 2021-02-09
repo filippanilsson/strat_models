@@ -123,7 +123,7 @@ statemap = {}
 for state in states_sorted:
     state_vals = []
     for year in years:
-        state_vals.append(float(sm_strat.G.node[(state, year)]['theta']))
+        state_vals.append(float(sm_strat.G._node[(state, year)]['theta']))
     statemap[state] = state_vals
 output = pd.DataFrame(statemap).T
 output.columns = years

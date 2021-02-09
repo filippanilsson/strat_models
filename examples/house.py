@@ -65,7 +65,7 @@ X_train, Y_train, Z_train = get_data(df_train)
 X_test, Y_test, Z_test = get_data(df_test)
 
 K, n = bins * bins, X_train.shape[1]
-print(K * n, "variables")
+print("The stratified model will have", K * n, "variables.")
 
 ss = StandardScaler()
 X_train = ss.fit_transform(X_train)
@@ -75,7 +75,7 @@ X_test = ss.transform(X_test)
 data_train = dict(X=X_train, Y=Y_train, Z=Z_train)
 data_test = dict(X=X_test, Y=Y_test, Z=Z_test)
 
-kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=1000, n_jobs=2, verbose=1)
+kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=1000, n_jobs=2, verbose=False)
 
 def rms(x):
     return np.sqrt(np.mean(np.square(x)))
@@ -90,18 +90,18 @@ sm_fully = strat_models.StratifiedModel(bm, graph=G)
 
 info = sm_fully.fit(data_train, **kwargs)
 score = sm_fully.scores(data_test)
-print("Fully")
-print("\t", info)
-print("\t", score)
+print("Separate model")
+print("\t Info =", info)
+print("\t Loss =", score)
 
 strat_models.set_edge_weight(G, 15)
 sm_strat = strat_models.StratifiedModel(bm, graph=G)
 
 info = sm_strat.fit(data_train, **kwargs)
 score = sm_strat.scores(data_test)
-print("Strat")
-print("\t", info)
-print("\t", score)
+print("Stratified model")
+print("\t Info =", info)
+print("\t Loss =", score)
 
 G = nx.empty_graph(1)
 sm_common = strat_models.StratifiedModel(bm, graph=G)
@@ -111,22 +111,22 @@ data_common_test = dict(X=X_test, Y=Y_test, Z=[0]*len(Y_test))
 
 info = sm_common.fit(data_common_train, **kwargs)
 score = sm_common.scores(data_common_test)
-print("Common")
-print("\t", info)
-print("\t", score)
+print("Common model")
+print("\t Info =", info)
+print("\t Loss =", score)
 
 rf = RandomForestRegressor(n_estimators=50, min_samples_leaf=1, n_jobs=-1)
 rf.fit(df_train.drop(['log_price', 'lat_bin', 'long_bin'],
                      axis=1), df_train['log_price'])
 score = rms(rf.predict(df_test.drop(
     ['log_price', 'lat_bin', 'long_bin'], axis=1)) - df_test['log_price'])
-print("RF")
-print("\t", score)
-print("\t", np.sum([rf.estimators_[i].tree_.node_count for i in range(50)]))
+print("Random Forest")
+print("\t Loss =", score)
+print("\t No. Parameters", np.sum([rf.estimators_[i].tree_.node_count for i in range(50)]))
 
 # Visualize
 latexify(fig_width=8)
-params = np.array([sm_strat.G.node[node]['theta'] for node in sm_strat.G.nodes()])
+params = np.array([sm_strat.G._node[node]['theta'] for node in sm_strat.G.nodes()])
 params = params.reshape(bins, bins, 10)[::-1, :, :]
 feats = ['bedrooms', 'bathrooms', 'sqft living', 'sqft lot', 'floors',
          'waterfront', 'condition', 'grade', 'yr built', 'intercept']
