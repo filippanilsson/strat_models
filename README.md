@@ -12,9 +12,9 @@ To install pytorch, follow instructions from [pytorch.org](https://pytorch.org/)
 pip install https://download.pytorch.org/whl/cpu/torch-1.0.1.post2-cp37-cp37m-linux_x86_64.whl
 ```
 
-To install the latest version, clone the repository and run:
+To install the latest version, run:
 ```
-python setup.py install
+pip install git+https://github.com/cvxgrp/strat_models.git
 ```
 ## Usage
 To fit a stratified model, one needs to specify a base model, a graph, and data.
