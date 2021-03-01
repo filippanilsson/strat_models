@@ -124,7 +124,7 @@ If you use `strat_models`, please cite the following papers:
 ```
 @article{strat_models,
     author       = {Jonathan Tuck and Shane Barratt and Stephen Boyd},
-    title        = {A distributed method for fitting Laplacian regularized stratified models},
+    title        = {A distributed method for fitting {L}aplacian regularized stratified models},
     journal      = {arXiv preprint arXiv:1904.12017},
     title        = {A Distributed Method for Fitting {L}aplacian Regularized Stratified Models},
     journal      = {Journal of Machine Learning Research},
@@ -133,7 +133,7 @@ If you use `strat_models`, please cite the following papers:
 }
 
 @article{eigen_strat_models,
-	author = {Tuck, J. and Boyd, S.,
+	author = {Jonathan Tuck and Stephen Boyd},
 	title = {Eigen-stratified models},
 	journal = {Optimization and Engineering},
 	year = {2021},
