@@ -7,7 +7,6 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-from utils import latexify
 import matplotlib.pyplot as plt
 
 np.random.seed(123)
