@@ -1,0 +1,20 @@
+{   
+
+    "loss_functions": {
+        "sum_squares": {
+            "name": "sum_squares_loss",
+            "params": {"intercept": true}            
+        }
+    }, 
+
+    "regularizers": {
+        "L2": {
+            "name": "L2_reg",
+            "params": {"lambd": 1e-3}
+        },
+        "sum_squares": {
+            "name": "sum_squares_reg",
+            "params": {"lambd": 1e-4}
+        }
+    }
+}
