@@ -4,6 +4,26 @@
         "sum_squares": {
             "name": "sum_squares_loss",
             "params": {"intercept": true}            
+        },
+        "logistic": {
+            "name": "logistic_loss",
+            "params": {"intercept": true}
+        },
+        "co_max": {
+            "name": "covariance_max_likelihood_loss",
+            "params": {}
+        },
+        "nonparam_discrete": {
+            "name": "nonparametric_discrete_loss",
+            "params": {}
+        },
+        "poisson": {
+            "name": "poisson_loss",
+            "params": {"min_theta": 1e-5}
+        },
+        "bernoulli": {
+            "name": "bernoulli_loss",
+            "params": {"min_theta": 1e-5, "max_theta": 0.99999}
         }
     }, 
 
@@ -15,6 +35,46 @@
         "sum_squares": {
             "name": "sum_squares_reg",
             "params": {"lambd": 1e-4}
+        },
+        "zero:": {
+            "name": "zero_reg",
+            "params": {"lambda": 0}
+        },
+        "trace": {
+            "name": "trace_reg",
+            "params": {"lambd": 1e-3}
+        },
+        "L1": {
+            "name": "L1_reg",
+            "params": {"lambd": 1e-3}
+        },
+        "elastic_net_reg": {
+            "name": "elastic_net_reg",
+            "params": {"lambd": 1e-3}
+        },
+        "neg_log": {
+            "name": "neg_log_reg",
+            "params": {"lambd": 1e-3}
+        },
+        "nonneg": {
+            "name": "nonnegative_reg",
+            "params": {"lambd": 1e-3}
+        },
+        "simplex": {
+            "name": "simplex_reg",
+            "params": {"lambd": 1e-3}
+        },
+        "min_thres_one": {
+            "name": "min_threshold_reg_one_elem",
+            "params": {"lambd": 1e-3}
+        },
+        "clip": {
+            "name": "clip_reg",
+            "params": {}
+        },
+        "trace_offdiag": {
+            "name": "trace_offdiagL1Norm",
+            "params": {}
         }
     }
 }

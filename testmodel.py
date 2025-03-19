@@ -1,9 +1,15 @@
+import argparse
+import glob
+import os
 import networkx as nx
 import pandas as pd
 from itertools import combinations
 from sklearn.model_selection import train_test_split
 import json
 import numpy as np
+import pickle
+import random
+from datetime import datetime
 
 from strat_models.fit import *
 from strat_models.models import *
@@ -31,7 +37,7 @@ def create_g(stratify_feature=False):
 
 """ Splits data into training and testing sets
 """
-def split_data(file):
+def split_data(file, test_size=0.2, val_size=0.1):
     with open(file, 'r') as f:
         data = json.load(f)
 
@@ -40,20 +46,31 @@ def split_data(file):
     Y = np.log1p(Y) # logtransform slutpris for smaller loss
     Z = data['Z'] # stratifying feature
 
-    X_df = pd.DataFrame(X)
-    # Make sure everything is numeric
-    X_df = X_df.apply(pd.to_numeric, errors='coerce')
+    X_df = pd.DataFrame(X).apply(pd.to_numeric, errors='coerce')  # Convert all columns to numbers
     X_df.columns = X_df.columns.str.strip()
 
+    # Train and test split
     X_train, X_test, Y_train, Y_test, Z_train, Z_test = train_test_split(
-        X_df, Y, Z, test_size=0.2, random_state=42
+        X_df, Y, Z, test_size=test_size, random_state=42
+    )
+
+    # Split train into train and validation
+    X_train, X_val, Y_train, Y_val, Z_train, Z_val = train_test_split(
+        X_train, Y_train, Z_train, test_size=val_size, random_state=42
     )
     
     train_data = {'X': X_train.to_numpy(dtype=np.float64), 'Y': np.array(Y_train, dtype=np.float64), 'Z': np.array(Z_train, dtype=int)}
+    val_data = {'X': X_val.to_numpy(dtype=np.float64), 'Y': np.array(Y_val, dtype=np.float64), 'Z': np.array(Z_val, dtype=int)}
     test_data = {'X':  X_test.to_numpy(dtype=np.float64), 'Y': np.array(Y_test, dtype=np.float64), 'Z': np.array(Z_test, dtype=int)}
 
-    return train_data, test_data
+    return train_data, val_data, test_data
 
+""" Format Y depending on loss function"""
+def format_Y(Y, loss_name):
+    if loss_name in ['nonparametric_discrete_loss', 'poisson_loss', 'bernoulli_loss', 'covariance_max_likelihood_loss']:
+        return Y.ravel()
+    else:
+        return Y.reshape(-1, 1)
 
 """ Adds nodes and edges to G
 """
@@ -74,12 +91,30 @@ def setup_sm(loss, reg):
        config = json.load(f)
 
     loss_functions_map = {
-        "sum_squares_loss": sum_squares_loss
+        "sum_squares_loss": sum_squares_loss,
+        "logistic_loss": logistic_loss,
+        "covariance_max_likelihood_loss": covariance_max_likelihood_loss,
+        "nonparametric_discrete_loss": nonparametric_discrete_loss,
+        "poisson_loss": poisson_loss,
+        "bernoulli_loss": bernoulli_loss
     }
 
     reg_map = {
         "sum_squares_reg": sum_squares_reg,
-        "L2_reg": L2_reg
+        "L2_reg": L2_reg,
+        "zero_reg": zero_reg,
+        "trace_reg": trace_reg,
+        "mtx_scaled_sum_squares_reg": mtx_scaled_sum_squares_reg,
+        "mtx_scaled_plus_sum_squares_reg": mtx_scaled_plus_sum_squares_reg,
+        "scaled_plus_sum_squares_reg": scaled_plus_sum_squares_reg,
+        "L1_reg": L1_reg,
+        "elastic_net_reg": elastic_net_reg,
+        "neg_log_reg": neg_log_reg,
+        "nonnegative_reg": nonnegative_reg,
+        "simplex_reg": simplex_reg,
+        "min_threshold_reg_one_elem": min_threshold_reg_one_elem,
+        "clip_reg": clip_reg,
+        "trace_offdiagL1Norm": trace_offdiagL1Norm
     }
    
     if loss not in config["loss_functions"]:
@@ -100,7 +135,7 @@ def setup_sm(loss, reg):
     reg_f = reg_map.get(reg_name)
     reg_result = reg_f(**reg_params) if reg_f else None
 
-    return loss_result, reg_result
+    return loss_result, reg_result, loss_name, reg_name
 
 
 """ Creates the Stratified Model and prepares the graph weights
@@ -118,12 +153,71 @@ def create_sm(G, loss, reg, train_data):
 
     return sm_strat
 
+""" Tuning hyperparameters
+"""
+def tune_hyperparameters(file, num_trials=10):
+    train_data, val_data, _ = split_data(file)
+
+    best_score = float('inf')
+    best_params = None
+
+    for _ in range(num_trials):
+        # Randomly sample hyperparameters
+        reg_type = random.choice(["L2", "sum_squares", "L2", "zero", "trace", "elastic_net_reg","neg_log","nonneg","simplex","min_thres_one","clip","trace_offdiag"])
+        loss_type = random.choice(["sum_squares", "logistic"])
+
+        print(f"Trying loss={loss_type}, reg={reg_type}")
+        G, pairs_list = create_g()
+        finish_g(train_data, G, pairs_list)
+        loss, reg, loss_name, reg_name = setup_sm(loss_type, reg_type)
+        sm_strat = create_sm(G, loss, reg, train_data)
+        kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=300, n_jobs=1, verbose=True)
+        sm_strat.fit(train_data, **kwargs)
+        val_score = sm_strat.scores(val_data)
+        print(f"Validation Loss: {val_score}")
+
+        if val_score < best_score:
+            best_score = val_score
+            best_params = (loss_type, reg_type)
+
+    print(f"\nBest Hyperparameters: Loss={best_params[0]}, Reg={best_params[1]}")
+    print(f"Best Validation Loss: {best_score}")
+    
+    return best_params
+
+""" Save the model"""
+def save_model(model, loss_name, reg_name):
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    filename = f'models/model_{timestamp}.pkl'
+
+    # Save metadata
+    model_data = {
+        'model': model,
+        'loss': loss,
+        'reg': reg,
+        'timestamp': timestamp
+    }
+
+    with open(filename, 'wb') as f:
+        pickle.dump(model_data, f)
+
+    print(f"Model saved as {filename} (Loss: {loss_name}, Reg: {reg_name})")
+    return filename
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train and test stratified model")
+    parser.add_argument("--retrain", action="store_true", help="Retrain the model", default=False, required=False)
+    args = parser.parse_args()
+
     G, pairs_list = create_g()
-    train_data, test_data = split_data('../data.json')
+    train_data, val_data, test_data = split_data('../data.json')
     finish_g(train_data, G, pairs_list)
-    loss, reg = setup_sm("sum_squares", "L2")
+    loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
+    
+    # Format depending on loss function
+    train_data["Y"] = format_Y(train_data["Y"], loss_name)
+    val_data["Y"] = format_Y(val_data["Y"], loss_name)
+    test_data["Y"] = format_Y(test_data["Y"], loss_name)
     
     sm_strat = create_sm(G, loss, reg, train_data)
     kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=5000, n_jobs=1, verbose=True)
@@ -131,9 +225,33 @@ if __name__ == "__main__":
     from multiprocessing import freeze_support
     freeze_support()
 
-    info = sm_strat.fit(train_data, **kwargs)
-    score = sm_strat.scores(test_data)
+    # Train model
+    if args.retrain:
+        info = sm_strat.fit(train_data, **kwargs)
+    else:
+        models = glob.glob('models/*.pkl')
+        if not models:
+            raise ValueError("No models found to load")
+        file = max(models, key=os.path.getctime)
+        with open(file, 'rb') as f:
+            model_data = pickle.load(f)
+            print(f"Model loaded from {file}")
+            print(f"Loss Function: {model_data['loss']}")
+            print(f"Regularizer: {model_data['reg']}")
+            print(f"Trained on: {model_data['timestamp']}")
+        sm_strat = model_data['model']
+    
+    # Test and validate model
+    val_score = sm_strat.scores(val_data)
+    test_score = sm_strat.scores(test_data)
+   
     print("Stratified model")
-    print("\t Info =", info)
-    print("\t Loss =", score)
+    if args.retrain:
+        print("\t Info =", info)
+    print("\t Validation Loss =", val_score)
+    print("\t Test Loss =", test_score)
 
+    model_filename = save_model(sm_strat, loss_name, reg_name)
+    print(f'Model saved as {model_filename}')
+
+    best_hyperparams = tune_hyperparameters('../data.json')
