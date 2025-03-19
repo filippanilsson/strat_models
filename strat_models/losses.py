@@ -150,6 +150,8 @@ class sum_squares_loss(Loss):
 		for i, node in enumerate(G.nodes()):
 			vertex = G._node[node]
 			if 'Y' in vertex:
+				#print("Vertex X:", vertex['X'])
+				#print("Type of X:", type(vertex['X']))
 				X = torch.tensor(vertex['X']).double()
 				Y = torch.tensor(vertex['Y']).double()
 
