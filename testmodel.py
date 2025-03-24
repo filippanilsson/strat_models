@@ -257,14 +257,14 @@ if __name__ == "__main__":
         
         G, _ = create_g(stratify_feature=True)
 
-        data_train, data_val, data_test = split_data(df, G)
+        train_data, val_data, test_data = split_data(df, G)
         loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
 
-        data_train["Y"] = format_Y(data_train["Y"], loss_name)
-        data_val["Y"] = format_Y(data_val["Y"], loss_name)
-        data_test["Y"] = format_Y(data_test["Y"], loss_name)
+        train_data["Y"] = format_Y(train_data["Y"], loss_name)
+        val_data["Y"] = format_Y(val_data["Y"], loss_name)
+        test_data["Y"] = format_Y(test_data["Y"], loss_name)
 
-        sm_strat = create_sm(G, loss, reg, data_train, stratifying_feature=True)
+        sm_strat = create_sm(G, loss, reg, train_data, stratifying_feature=True)
     else:
         print("Stratifying over kontorid")
         G, pairs_list = create_g()
@@ -321,10 +321,10 @@ if __name__ == "__main__":
         sm_strat.eval()
 
         with torch.no_grad():
-            y_pred = sm_strat(data_test['X']) # Get predictions
+            y_pred = sm_strat(test_data['X']) # Get predictions
         
         y_pred_np = y_pred.cpu().numpy()
-        y_true_np = data_test['Y'].cpu().numpy()
+        y_true_np = test_data['Y'].cpu().numpy()
 
         rmse = np.sqrt(mean_squared_error(y_true_np, y_pred_np))
         r2 = r2_score(y_true_np, y_pred_np)
