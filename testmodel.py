@@ -74,7 +74,11 @@ def get_data(df, G):
         kommunid, (latbin, longbin) = node
 
         # Query data for this specific kommun and bin
-        df_node = df.query('kommunid == %d & lat_bin == %d & long_bin == %d' % (kommunid, latbin, longbin))
+        df_node = df.loc[
+                    (df['kommunid'] == kommunid) & 
+                    (df['lat_bin'] == latbin) & 
+                    (df['long_bin'] == longbin)
+                    ]
         if df_node.empty:
             continue
 
@@ -84,16 +88,16 @@ def get_data(df, G):
         N = X_node.shape[0]
         X += [X_node]
         Y += [Y_node]
-        Z.extend([node] * N)
+        Z.extend([(kommunid, (latbin, longbin))] * N)
     
     return np.concatenate(X, axis=0), np.concatenate(Y, axis=0)[:, np.newaxis], Z
 
 
 """ Splits data into training and testing sets
 """
-def split_data(df, G, file='../data.json', test_size=0.2, val_size=0.1, stratify_feature=False):
+def split_data(df, G, file='../data.json', test_size=0.2, val_size=0.1, stratifying_feature=False):
 
-    if not stratify_feature:
+    if not stratifying_feature:
         with open(file, 'r') as f:
             data = json.load(f)
 
@@ -121,9 +125,11 @@ def split_data(df, G, file='../data.json', test_size=0.2, val_size=0.1, stratify
 
         return train_data, val_data, test_data
     else:
+        print("ELLO MATE")
         df_train, df_test = train_test_split(df)
+        print(f"df_train size: {len(df_train)}, df_test size: {len(df_test)}")
         df_train, df_val = train_test_split(df_train)
-
+        print(f"df_train size: {len(df_train)}, df_val size: {len(df_val)}")
         X_train, Y_train, Z_train = get_data(df_train, G)
         X_test, Y_test, Z_test = get_data(df_test, G)
         X_val, Y_val, Z_val = get_data(df_val, G)
@@ -286,7 +292,7 @@ if __name__ == "__main__":
         
         G = build_G(df)
 
-        train_data, val_data, test_data = split_data(df, G)
+        train_data, val_data, test_data = split_data(df, G, stratifying_feature=True)
         loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
 
         train_data["Y"] = format_Y(train_data["Y"], loss_name)
@@ -294,6 +300,10 @@ if __name__ == "__main__":
         test_data["Y"] = format_Y(test_data["Y"], loss_name)
 
         sm_strat = create_sm(G, loss, reg, train_data, stratifying_feature=True)
+        Z = train_data['Z']
+        print("Graph Nodes:", list(G.nodes())[:10])  # Print first 10 nodes
+        print("First 10 Z values:", Z[:10])  # Compare to Z
+
     else:
         print("Stratifying over kontorid")
         G, pairs_list = create_g()
