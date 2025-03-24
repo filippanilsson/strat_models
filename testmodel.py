@@ -5,6 +5,7 @@ import networkx as nx
 import pandas as pd
 from itertools import combinations
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
 import json
 import numpy as np
 import pickle
@@ -20,9 +21,10 @@ from strat_models.utils import *
 
 """ Creates G and prepares the edges. For now Z is kontorsid where an edge exists if two offices are in the same kommun.
 """
-def create_g(stratify_feature=False):
-    G = nx.Graph()
+def create_g(stratify_feature=False, n_bins=50):
+
     if not stratify_feature: # Stratify over kontorid for now
+        G = nx.Graph()
         kontor = pd.read_csv('../../initial_data/kontor_kommuner.csv')
 
         # Group by 'Kommunnamn' and create pairs of 'KontorId' within each group
@@ -33,37 +35,76 @@ def create_g(stratify_feature=False):
 
         pairs_list = list(pairs)
         return G, pairs_list
+    else:
+        return nx.grid_2d_graph(n_bins, n_bins), [] # adjust depending on bin size
+
+
+""" Get data if we using proper binning technique
+"""
+def get_data(df, G):
+    df['log_slutpris'] = np.log(df['slutpris'])
+
+    X = []
+    Y = []
+    Z = []
+    for node in G.nodes():
+        latbin, longbin = node
+        df_node = df.query('lat_bin == %d & long_bin == %d' % (latbin, longbin))
+        X_node = np.array(df_node.drop(['slutpris', 'kommunid', 'lat_bin', 'long_bin'], axis=1))
+        Y_node = np.array(df_node['log_slutpris'])
+        N = X_node.shape[0]
+        X += [X_node]
+        Y += [Y_node]
+        Z.extend([node] * N)
+    
+    return np.concatenate(X, axis=0), np.concatenate(Y, axis=0)[:, np.newaxis], Z
 
 
 """ Splits data into training and testing sets
 """
-def split_data(file, test_size=0.2, val_size=0.1):
-    with open(file, 'r') as f:
-        data = json.load(f)
+def split_data(df, G, file='../data.json', test_size=0.2, val_size=0.1, stratify_feature=False):
 
-    X = data['X']
-    Y = np.array(data['Y']).reshape(-1, 1) # dependent variable slutpris
-    Y = np.log1p(Y) # logtransform slutpris for smaller loss
-    Z = data['Z'] # stratifying feature
+    if not stratify_feature:
+        with open(file, 'r') as f:
+            data = json.load(f)
 
-    X_df = pd.DataFrame(X).apply(pd.to_numeric, errors='coerce')  # Convert all columns to numbers
-    X_df.columns = X_df.columns.str.strip()
+        X = data['X']
+        Y = np.array(data['Y']).reshape(-1, 1) # dependent variable slutpris
+        Y = np.log1p(Y) # logtransform slutpris for smaller loss
+        Z = data['Z'] # stratifying feature
 
-    # Train and test split
-    X_train, X_test, Y_train, Y_test, Z_train, Z_test = train_test_split(
-        X_df, Y, Z, test_size=test_size, random_state=42
-    )
+        X_df = pd.DataFrame(X).apply(pd.to_numeric, errors='coerce')  # Convert all columns to numbers
+        X_df.columns = X_df.columns.str.strip()
 
-    # Split train into train and validation
-    X_train, X_val, Y_train, Y_val, Z_train, Z_val = train_test_split(
-        X_train, Y_train, Z_train, test_size=val_size, random_state=42
-    )
-    
-    train_data = {'X': X_train.to_numpy(dtype=np.float64), 'Y': np.array(Y_train, dtype=np.float64), 'Z': np.array(Z_train, dtype=int)}
-    val_data = {'X': X_val.to_numpy(dtype=np.float64), 'Y': np.array(Y_val, dtype=np.float64), 'Z': np.array(Z_val, dtype=int)}
-    test_data = {'X':  X_test.to_numpy(dtype=np.float64), 'Y': np.array(Y_test, dtype=np.float64), 'Z': np.array(Z_test, dtype=int)}
+        # Train and test split
+        X_train, X_test, Y_train, Y_test, Z_train, Z_test = train_test_split(
+            X_df, Y, Z, test_size=test_size, random_state=42
+        )
 
-    return train_data, val_data, test_data
+        # Split train into train and validation
+        X_train, X_val, Y_train, Y_val, Z_train, Z_val = train_test_split(
+            X_train, Y_train, Z_train, test_size=val_size, random_state=42
+        )
+        
+        train_data = {'X': X_train.to_numpy(dtype=np.float64), 'Y': np.array(Y_train, dtype=np.float64), 'Z': np.array(Z_train, dtype=int)}
+        val_data = {'X': X_val.to_numpy(dtype=np.float64), 'Y': np.array(Y_val, dtype=np.float64), 'Z': np.array(Z_val, dtype=int)}
+        test_data = {'X':  X_test.to_numpy(dtype=np.float64), 'Y': np.array(Y_test, dtype=np.float64), 'Z': np.array(Z_test, dtype=int)}
+
+        return train_data, val_data, test_data
+    else:
+        df_train, df_test = train_test_split(df)
+        df_train, df_val = train_test_split(df_train)
+
+        X_train, Y_train, Z_train = get_data(df_train, G)
+        X_test, Y_test, Z_test = get_data(df_test, G)
+        X_val, Y_val, Z_val = get_data(df_val, G)
+
+        data_train = dict(X=X_train, Y=Y_train, Z=Z_train)
+        data_test = dict(X=X_test, Y=Y_test, Z=Z_test)
+        data_val = dict(X=X_val, Y=Y_val, Z=Z_val)
+
+        return data_train, data_val, data_test
+        
 
 """ Format Y depending on loss function"""
 def format_Y(Y, loss_name):
@@ -140,23 +181,24 @@ def setup_sm(loss, reg):
 
 """ Creates the Stratified Model and prepares the graph weights
 """
-def create_sm(G, loss, reg, train_data):
+def create_sm(G, loss, reg, train_data, stratifying_feature=False):
     Z_train = train_data['Z']
     bm = BaseModel(loss=loss, reg=reg)
 
-    set_edge_weight(G, 2)
+    set_edge_weight(G, 15)
     sm_strat = StratifiedModel(bm, graph=G)
 
-    missing_nodes = set(Z_train) - set(G.nodes)
-    if missing_nodes:
-        print("Warning: These nodes are missing in G:", missing_nodes)
+    if not stratifying_feature:
+        missing_nodes = set(Z_train) - set(G.nodes)
+        if missing_nodes:
+            print("Warning: These nodes are missing in G:", missing_nodes)
 
     return sm_strat
 
 """ Tuning hyperparameters
 """
-def tune_hyperparameters(file, num_trials=10):
-    train_data, val_data, _ = split_data(file)
+def tune_hyperparameters(df, G, num_trials=10):
+    train_data, val_data, _ = split_data(df, G, stratify_feature=True)
 
     best_score = float('inf')
     best_params = None
@@ -167,10 +209,9 @@ def tune_hyperparameters(file, num_trials=10):
         loss_type = random.choice(["sum_squares", "logistic"])
 
         print(f"Trying loss={loss_type}, reg={reg_type}")
-        G, pairs_list = create_g()
-        finish_g(train_data, G, pairs_list)
+        
         loss, reg, loss_name, reg_name = setup_sm(loss_type, reg_type)
-        sm_strat = create_sm(G, loss, reg, train_data)
+        sm_strat = create_sm(G, loss, reg, train_data, stratifying_feature=True)
         kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=300, n_jobs=1, verbose=True)
         sm_strat.fit(train_data, **kwargs)
         val_score = sm_strat.scores(val_data)
@@ -207,19 +248,38 @@ def save_model(model, loss_name, reg_name):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train and test stratified model")
     parser.add_argument("--retrain", action="store_true", help="Retrain the model", default=False, required=False)
+    parser.add_argument("--stratify_feature", action="store_true", help="Stratify over lat/long bins", default=True, required=False)
     args = parser.parse_args()
 
-    G, pairs_list = create_g()
-    train_data, val_data, test_data = split_data('../data.json')
-    finish_g(train_data, G, pairs_list)
-    loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
-    
-    # Format depending on loss function
-    train_data["Y"] = format_Y(train_data["Y"], loss_name)
-    val_data["Y"] = format_Y(val_data["Y"], loss_name)
-    test_data["Y"] = format_Y(test_data["Y"], loss_name)
-    
-    sm_strat = create_sm(G, loss, reg, train_data)
+    df = pd.read_csv('../../preprocessing/standardized_data/final.csv')
+    if args.stratify_feature:
+        print("Stratifying over lat/long bins")
+        
+        G, _ = create_g(stratify_feature=True)
+
+        data_train, data_val, data_test = split_data(df, G)
+        loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
+
+        data_train["Y"] = format_Y(data_train["Y"], loss_name)
+        data_val["Y"] = format_Y(data_val["Y"], loss_name)
+        data_test["Y"] = format_Y(data_test["Y"], loss_name)
+
+        sm_strat = create_sm(G, loss, reg, data_train, stratifying_feature=True)
+    else:
+        print("Stratifying over kontorid")
+        G, pairs_list = create_g()
+        train_data, val_data, test_data = split_data('../data.json')
+        finish_g(train_data, G, pairs_list)
+        loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
+        
+        # Format depending on loss function
+        train_data["Y"] = format_Y(train_data["Y"], loss_name)
+        val_data["Y"] = format_Y(val_data["Y"], loss_name)
+        test_data["Y"] = format_Y(test_data["Y"], loss_name)
+        
+        sm_strat = create_sm(G, loss, reg, train_data)
+
+
     kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=5000, n_jobs=1, verbose=True)
 
     from multiprocessing import freeze_support
@@ -254,4 +314,19 @@ if __name__ == "__main__":
     model_filename = save_model(sm_strat, loss_name, reg_name)
     print(f'Model saved as {model_filename}')
 
-    best_hyperparams = tune_hyperparameters('../data.json')
+
+    if args.retrain:
+        best_hyperparams = tune_hyperparameters(df, G)
+    else:
+        sm_strat.eval()
+
+        with torch.no_grad():
+            y_pred = sm_strat(data_test['X']) # Get predictions
+        
+        y_pred_np = y_pred.cpu().numpy()
+        y_true_np = data_test['Y'].cpu().numpy()
+
+        rmse = np.sqrt(mean_squared_error(y_true_np, y_pred_np))
+        r2 = r2_score(y_true_np, y_pred_np)
+        print(f"RMSE: {rmse:.4f}")
+        print(f"R2: {r2:.4f}")
