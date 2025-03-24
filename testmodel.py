@@ -39,6 +39,29 @@ def create_g(stratify_feature=False, n_bins=50):
         return nx.grid_2d_graph(n_bins, n_bins), [] # adjust depending on bin size
 
 
+""" Builds the Laplacian graph G, putting an edge between nodes if they are
+    adjacent in the same kommun
+"""
+def build_G(df):
+    G = nx.Graph()
+    for kommun in df['kommunid'].unique():
+        df_kommun = df[df['kommunid'] == kommun] # Filter data for this kommun
+        bins = set(zip(df_kommun['lat_bin'], df_kommun['long_bin'])) # Get unique bins for this kommun
+
+        # Add nodes to the graph
+        for node in bins:
+            G.add_node((kommun, node)) # Node = (kommunid, (latbin, longbin))
+
+        for node in bins:
+            lat, long = node
+            neighbors = [(lat + 1, long), (lat - 1, long), (lat, long + 1), (lat, long - 1)]
+
+            for neighbor in neighbors:
+                if neighbor in bins:
+                    G.add_edge((kommun, node), (kommun, neighbor))
+
+    return G
+
 """ Get data if we using proper binning technique
 """
 def get_data(df, G):
@@ -48,10 +71,16 @@ def get_data(df, G):
     Y = []
     Z = []
     for node in G.nodes():
-        latbin, longbin = node
-        df_node = df.query('lat_bin == %d & long_bin == %d' % (latbin, longbin))
+        kommunid, (latbin, longbin) = node
+
+        # Query data for this specific kommun and bin
+        df_node = df.query('kommunid == %d & lat_bin == %d & long_bin == %d' % (kommunid, latbin, longbin))
+        if df_node.empty:
+            continue
+
         X_node = np.array(df_node.drop(['slutpris', 'kommunid', 'lat_bin', 'long_bin'], axis=1))
         Y_node = np.array(df_node['log_slutpris'])
+        
         N = X_node.shape[0]
         X += [X_node]
         Y += [Y_node]
@@ -255,7 +284,7 @@ if __name__ == "__main__":
     if args.stratify_feature:
         print("Stratifying over lat/long bins")
         
-        G, _ = create_g(stratify_feature=True)
+        G = build_G(df)
 
         train_data, val_data, test_data = split_data(df, G)
         loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
