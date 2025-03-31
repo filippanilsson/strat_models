@@ -21,7 +21,7 @@ import glob
 import os
 import networkx as nx
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 from sklearn.metrics import mean_squared_error, r2_score
 
 import json
@@ -90,12 +90,17 @@ def build_G(df, test):
                     for i in range(len(kommun_nodes)):
                         for j in range(i + 1, len(kommun_nodes)):
                             G.add_edge(kommun_nodes[i], kommun_nodes[j])
+    # Ensure the directory exists
+    os.makedirs('results_from_training', exist_ok=True) 
+    
     if test:
-        nx.write_gpickle(G, 'results_from_training/laplacian_graph_TEST.gpickle')
-        print("Saved Laplacian graph to 'results_from_training/laplacian_graph_TEST.gpickle' ")
+        with open('results_from_training/laplacian_graph_TEST.pkl', 'wb') as f:
+            pickle.dump(G, f)
+        print("Saved Laplacian graph to 'results_from_training/laplacian_graph_TEST.pkl' ")
     else:
-        nx.write_gpickle(G, 'results_from_training/laplacian_graph.gpickle')
-        print("Saved Laplacian graph to 'results_from_training/laplacian_graph.gpickle' ")
+        with open('results_from_training/laplacian_graph.pkl', 'wb') as f:
+            pickle.dump(G, f)
+        print("Saved Laplacian graph to 'results_from_training/laplacian_graph.pkl'")
     return G
 
 
@@ -214,14 +219,15 @@ def setup_sm(loss, reg):
 
 """ Creates the Stratified Model and prepares the graph weights
 """
-def create_sm(G, loss, reg, train_data):
+def create_sm(G, loss, reg, train_data, weight=15):
     Z_train = train_data['Z']
     bm = BaseModel(loss=loss, reg=reg)
 
-    set_edge_weight(G, 15)
+    set_edge_weight(G, weight)
     sm_strat = StratifiedModel(bm, graph=G)
     
     return sm_strat
+
 
 """ Tuning hyperparameters
 """
@@ -255,16 +261,17 @@ def tune_hyperparameters(df, G, num_trials=10):
     return best_params
 
 """ Save the model"""
-def save_model(model, loss_name, reg_name):
+def save_model(model, loss_name, reg_name, weight=15):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     filename = f'models/model_{timestamp}.pkl'
 
     # Save metadata
     model_data = {
         'model': model,
-        'loss': loss,
-        'reg': reg,
-        'timestamp': timestamp
+        'loss': loss_name,
+        'reg': reg_name,
+        'timestamp': timestamp,
+        'edge_weight': weight
     }
 
     with open(filename, 'wb') as f:
@@ -273,33 +280,138 @@ def save_model(model, loss_name, reg_name):
     print(f"Model saved as {filename} (Loss: {loss_name}, Reg: {reg_name})")
     return filename
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train and test stratified model")
-    parser.add_argument("--retrain", action="store_true", help="Retrain the model", default=False, required=False)
-    parser.add_argument('--regraph', action="store_true", help="Regenerate the Laplacian graph G", default=False)
-    parser.add_argument("--test", action="store_true", help="Test the training on a subset of data to see if the pipeline works", default=False)
+"""
+    Tunes the edge weights of the graph G
+"""
+def tune_edge_weight(df, G, weight_candidates, loss, reg, loss_name, reg_name):
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    best_avg_loss = float('inf')
+    best_weight = None
+    kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=300, n_jobs=1, verbose=True)
 
-    args = parser.parse_args()
+    for weight in weight_candidates:
+        fold_losses = []
+        print(f"Trying edge weight: {weight}")
 
-    print('Loading data...')
-    df = pd.read_csv('../../preprocessing/standardized_data/final.csv')
-    if args.test:
-        print("TEST MODE ENABLED - Using top 3 municipalities only")
-        top_kommuner = df['kommunid'].value_counts().nlargest(3).index.to_list()
-        df = df[df['kommunid'].isin(top_kommuner)].copy
-        print(f"Selected kommuner: {top_kommuner}")
-        print(f"Subset size: {len(df)} rows")
+        for fold, (train_index, val_index) in enumerate(kf.split(df), 1):
+            df_train = df.iloc[train_index].copy()
+            df_val = df.iloc[val_index].copy()
+
+            # Prepare training and validationd data
+            X_train, Y_train, Z_train = get_data(df_train, G)
+            X_val, Y_val, Z_val = get_data(df_val, G)
+            train_data = dict(X=X_train, Y=Y_train, Z=Z_train)
+            val_data = dict(X=X_val, Y=Y_val, Z=Z_val)
+
+            model = create_sm(G, loss, reg, train_data, weight=weight)
+            model.fit(train_data, **kwargs)
+
+            fold_loss = model.scores(val_data)
+            fold_losses.append(fold_loss)
+            print(f"Fold {fold} Validation Loss: {fold_loss:.6f}")
+        
+        avg_loss = np.mean(fold_losses)
+        print(f"Average Validation Loss for weight {weight}: {avg_loss:.6f}")
+
+        if avg_loss < best_avg_loss:
+            best_avg_loss = avg_loss
+            best_weight = weight
+            print(f"New best weight: {best_weight} with average loss: {best_avg_loss:.6f}")
+    print(f"Best edge weight: {best_weight} based on 5-fold CV with average loss: {best_avg_loss:.6f}")
     
-    if args.regraph:
+    """ 
+        for weight in weight_candidates:
+            print(f"Trying edge weight: {weight}")
+            model = create_sm(G, loss, reg, train_data, weight)
+            # Fit the model
+            
+            model.fit(train_data, **kwargs)
+            score = model.scores(val_data)
+            print(f"Validation Loss for weight {weight}: {score}")
+            if score < best_score:
+                best_score = score
+                best_weight = weight
+            
+        print(f"Best edge weight: {best_weight} with validation loss: {best_score}") 
+        """
+    model_filename = save_model(model, loss_name, reg_name, best_weight)
+    print(f'Model saved as {model_filename}')
+    return best_weight
+
+"""
+    Retrain the model from scratch
+"""
+def retrain(df, test, regraph):
+    
+    if regraph:
         print("Building Laplacian graph...")
         G = build_G(df, args.test)
     else:
-        if args.test:
-            G_filepath = 'results_from_training/laplacian_graph_TEST.gpickle'
+        if test:
+            G_filepath = 'results_from_training/laplacian_graph_TEST.pkl'
         else:
-            G_filepath = 'results_from_training/laplacian_graph.gpickle'
+            G_filepath = 'results_from_training/laplacian_graph.pkl'
         print(f"Loading graph from {G_filepath}")
-        G = nx.read_gpickle(G_filepath)
+        with open(G_filepath, 'rb') as f:
+            G = pickle.load(f)
+
+    
+    print('Splitting data...')
+    train_data, val_data, test_data = split_data(df, G)
+    print('Creating Stratified Model')
+    loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
+
+    train_data["Y"] = format_Y(train_data["Y"], loss_name)
+    val_data["Y"] = format_Y(val_data["Y"], loss_name)
+    test_data["Y"] = format_Y(test_data["Y"], loss_name)
+
+    sm_strat = create_sm(G, loss, reg, train_data)
+    Z = train_data['Z']
+   
+    kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=1000, n_jobs=1, verbose=True)
+    from multiprocessing import freeze_support
+    freeze_support()
+
+    print('Retraining the model from scratch...')
+    info = sm_strat.fit(train_data, **kwargs)
+    model_filename = save_model(sm_strat, loss_name, reg_name)
+    print(f'Model saved as {model_filename}')
+
+    # Test and validate model
+    val_score = sm_strat.scores(val_data)
+    test_score = sm_strat.scores(test_data)
+   
+    print("Stratified model")
+    print("\t Info =", info)
+    print("\t Validation Loss =", val_score)
+    print("\t Test Loss =", test_score)
+
+    # Now we evaluate the new model
+    print("Evaluating performance...")
+   
+    with torch.no_grad():
+        y_pred = sm_strat.predict(test_data) # Get predictions
+    
+    y_pred_np = y_pred.cpu().numpy()
+    y_true_np = test_data['Y'].cpu().numpy()
+
+    rmse = np.sqrt(mean_squared_error(y_true_np, y_pred_np))
+    r2 = r2_score(y_true_np, y_pred_np)
+    print(f"RMSE: {rmse:.4f}")
+    print(f"R2: {r2:.4f}")
+
+"""
+    Tune hyperparameters with k-fold cross-validation
+"""
+def tune_model(df, edges, test):
+    if test:
+        G_filepath = 'results_from_training/laplacian_graph_TEST.pkl'
+    else:
+        G_filepath = 'results_from_training/laplacian_graph.pkl'
+    print(f"Loading graph from {G_filepath}")
+    with open(G_filepath, 'rb') as f:
+        G = pickle.load(f)
+    
 
     print('Splitting data...')
     train_data, val_data, test_data = split_data(df, G)
@@ -310,7 +422,71 @@ if __name__ == "__main__":
     val_data["Y"] = format_Y(val_data["Y"], loss_name)
     test_data["Y"] = format_Y(test_data["Y"], loss_name)
 
-    sm_strat = create_sm(G, loss, reg, train_data, stratifying_feature=True)
+    if edges:
+        print("Tuning edge weights...")
+        weight_candidates = [0.1, 5, 10, 15, 20, 25]
+        best_weight = tune_edge_weight(G, weight_candidates, loss, reg, loss_name, reg_name)
+        print(f"Best edge weight: {best_weight}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train and test stratified model")
+    parser.add_argument("--retrain", action="store_true", help="Retrain the model", default=False, required=False)
+    parser.add_argument('--regraph', action="store_true", help="Regenerate the Laplacian graph G", default=False)
+    parser.add_argument("--test", action="store_true", help="Test the training on a subset of data to see if the pipeline works", default=False)
+    parser.add_argument("--edges", action="store_true", help="Tune edge weights for Laplacian graph", default=False)
+    parser.add_argument("--hyper", action="store_true", help="Tune hyperparameters", default=False)
+    args = parser.parse_args()
+
+    print('Loading data...')
+    df = pd.read_csv('../../preprocessing/standardized_data/final.csv')
+
+    if args.regraph:
+        print("Building Laplacian graph...")
+        G = build_G(df, args.test)
+
+    if args.test:
+        print("TEST MODE ENABLED - Using top 3 municipalities only")
+        top_kommuner = df['kommunid'].value_counts().nlargest(3).index.to_list()
+        df = df[df['kommunid'].isin(top_kommuner)].copy()
+        print(f"Selected kommuner: {top_kommuner}")
+        print(f"Subset size: {len(df)} rows")
+
+    if args.retrain:
+        retrain(df, args.test, args.regraph)
+
+    if args.edges:
+        tune_model(df, args.edges, args.test)
+
+    """ if args.test:
+        print("TEST MODE ENABLED - Using top 3 municipalities only")
+        top_kommuner = df['kommunid'].value_counts().nlargest(3).index.to_list()
+        df = df[df['kommunid'].isin(top_kommuner)].copy()
+        print(f"Selected kommuner: {top_kommuner}")
+        print(f"Subset size: {len(df)} rows")
+    
+    if args.regraph:
+        print("Building Laplacian graph...")
+        G = build_G(df, args.test)
+    else:
+        if args.test:
+            G_filepath = 'results_from_training/laplacian_graph_TEST.pkl'
+        else:
+            G_filepath = 'results_from_training/laplacian_graph.pkl'
+        print(f"Loading graph from {G_filepath}")
+        with open(G_filepath, 'rb') as f:
+            G = pickle.load(f)
+
+    print('Splitting data...')
+    train_data, val_data, test_data = split_data(df, G)
+    print('Creating Stratified Model')
+    loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
+
+    train_data["Y"] = format_Y(train_data["Y"], loss_name)
+    val_data["Y"] = format_Y(val_data["Y"], loss_name)
+    test_data["Y"] = format_Y(test_data["Y"], loss_name)
+
+    sm_strat = create_sm(G, loss, reg, train_data)
     Z = train_data['Z']
    
     kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=1000, n_jobs=1, verbose=True)
@@ -318,7 +494,7 @@ if __name__ == "__main__":
     from multiprocessing import freeze_support
     freeze_support()
 
-    # Train model
+   # Train model
     if args.retrain:
         print('Retraining the model from scratch...')
         info = sm_strat.fit(train_data, **kwargs)
@@ -347,23 +523,25 @@ if __name__ == "__main__":
     print("\t Validation Loss =", val_score)
     print("\t Test Loss =", test_score)
 
+    # Now we evaluate the new model
+    print("Evaluating performance...")
+   
+    with torch.no_grad():
+        y_pred = sm_strat.predict(test_data) # Get predictions
     
-    if args.retrain:
-        # Now we evaluate the new model
-        print("Evaluating performance...")
-        sm_strat.eval()
+    y_pred_np = y_pred.cpu().numpy()
+    y_true_np = test_data['Y'].cpu().numpy()
 
-        with torch.no_grad():
-            y_pred = sm_strat(test_data['X']) # Get predictions
-        
-        y_pred_np = y_pred.cpu().numpy()
-        y_true_np = test_data['Y'].cpu().numpy()
-
-        rmse = np.sqrt(mean_squared_error(y_true_np, y_pred_np))
-        r2 = r2_score(y_true_np, y_pred_np)
-        print(f"RMSE: {rmse:.4f}")
-        print(f"R2: {r2:.4f}")    
-    else:
+    rmse = np.sqrt(mean_squared_error(y_true_np, y_pred_np))
+    r2 = r2_score(y_true_np, y_pred_np)
+    print(f"RMSE: {rmse:.4f}")
+    print(f"R2: {r2:.4f}")    
+    if not args.retrain:
         # We tune instead of retraining the whole model
-        best_hyperparams = tune_hyperparameters(df, G)
+        print("Tuning edge weights...")
+        weight_candidates = [0.1, 5, 10, 15, 20, 25]
+        best_weight = tune_edge_weight(G, weight_candidates, loss, reg, train_data, val_data)
+        print(f"Best edge weight: {best_weight}") """
+ 
+        
         
