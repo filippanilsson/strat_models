@@ -171,29 +171,17 @@ def setup_sm(loss, reg):
 
     loss_functions_map = {
         "sum_squares_loss": sum_squares_loss,
-        "logistic_loss": logistic_loss,
-        "covariance_max_likelihood_loss": covariance_max_likelihood_loss,
-        "nonparametric_discrete_loss": nonparametric_discrete_loss,
-        "poisson_loss": poisson_loss,
-        "bernoulli_loss": bernoulli_loss
     }
 
     reg_map = {
         "sum_squares_reg": sum_squares_reg,
         "L2_reg": L2_reg,
         "zero_reg": zero_reg,
-        "trace_reg": trace_reg,
         "mtx_scaled_sum_squares_reg": mtx_scaled_sum_squares_reg,
         "mtx_scaled_plus_sum_squares_reg": mtx_scaled_plus_sum_squares_reg,
         "scaled_plus_sum_squares_reg": scaled_plus_sum_squares_reg,
         "L1_reg": L1_reg,
         "elastic_net_reg": elastic_net_reg,
-        "neg_log_reg": neg_log_reg,
-        "nonnegative_reg": nonnegative_reg,
-        "simplex_reg": simplex_reg,
-        "min_threshold_reg_one_elem": min_threshold_reg_one_elem,
-        "clip_reg": clip_reg,
-        "trace_offdiagL1Norm": trace_offdiagL1Norm
     }
    
     if loss not in config["loss_functions"]:
@@ -239,7 +227,7 @@ def tune_hyperparameters(df, G, num_trials=10):
 
     for _ in range(num_trials):
         # Randomly sample hyperparameters
-        reg_type = random.choice(["L2", "sum_squares", "L2", "zero", "trace", "elastic_net_reg","neg_log","nonneg","simplex","min_thres_one","clip","trace_offdiag"])
+        reg_type = random.choice(["L2", "sum_squares", "L2", "zero", "elastic_net_reg", "mtx_scaled_sum_squares_reg", "mtx_scaled_plus_sum_squares_reg", "scaled_plus_sum_squares_reg"])
         loss_type = random.choice(["sum_squares", "logistic"])
 
         print(f"Trying loss={loss_type}, reg={reg_type}")
@@ -285,12 +273,13 @@ def save_model(model, loss_name, reg_name, weight=15):
 """
 def tune_edge_weight(df, G, weight_candidates, loss, reg, loss_name, reg_name):
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
-    best_avg_loss = float('inf')
+    best_avg_rmse = float('inf')
     best_weight = None
     kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=300, n_jobs=1, verbose=True)
 
+    results = []
     for weight in weight_candidates:
-        fold_losses = []
+        fold_rms_errors = []
         print(f"Trying edge weight: {weight}")
 
         for fold, (train_index, val_index) in enumerate(kf.split(df), 1):
@@ -306,18 +295,23 @@ def tune_edge_weight(df, G, weight_candidates, loss, reg, loss_name, reg_name):
             model = create_sm(G, loss, reg, train_data, weight=weight)
             model.fit(train_data, **kwargs)
 
-            fold_loss = model.scores(val_data)
-            fold_losses.append(fold_loss)
-            print(f"Fold {fold} Validation Loss: {fold_loss:.6f}")
+            y_pred = model.predict(val_data)
+            rmse = np.sqrt(mean_squared_error(Y_val, y_pred))
+            fold_rms_errors.append(rmse)
+            print(f"Fold {fold} RMSE: {rmse:.6f}")
         
-        avg_loss = np.mean(fold_losses)
-        print(f"Average Validation Loss for weight {weight}: {avg_loss:.6f}")
+        avg_rmse = np.mean(rmse)
+        results.append({'edge_weight': weight, 'avg_rmse': avg_rmse})
+        print(f"Average Validation Loss for weight {weight}: {avg_rmse:.6f}")
 
-        if avg_loss < best_avg_loss:
-            best_avg_loss = avg_loss
+        if avg_rmse < best_avg_rmse:
+            best_avg_rmse = avg_rmse
             best_weight = weight
-            print(f"New best weight: {best_weight} with average loss: {best_avg_loss:.6f}")
-    print(f"Best edge weight: {best_weight} based on 5-fold CV with average loss: {best_avg_loss:.6f}")
+            print(f"New best weight: {best_weight} with average RMSE: {best_avg_rmse:.6f}")
+    
+    results_df = pd.DataFrame(results)
+    results_df.to_csv('results_from_training/edge_weights_RMSE.csv', index=False)
+    print(f"Best edge weight: {best_weight} based on 5-fold CV with average RMSE: {best_avg_rmse:.6f}")
     
     """ 
         for weight in weight_candidates:
@@ -424,8 +418,8 @@ def tune_model(df, edges, test):
 
     if edges:
         print("Tuning edge weights...")
-        weight_candidates = [0.1, 5, 10, 15, 20, 25]
-        best_weight = tune_edge_weight(G, weight_candidates, loss, reg, loss_name, reg_name)
+        weight_candidates = [0.05, 0.06, 0.07, 0.075, 0.08, 0.09, 0.1]
+        best_weight = tune_edge_weight(df, G, weight_candidates, loss, reg, loss_name, reg_name)
         print(f"Best edge weight: {best_weight}")
 
 
