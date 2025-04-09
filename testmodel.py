@@ -38,6 +38,7 @@ from strat_models.utils import *
 
 """ Builds the Laplacian graph G, putting an edge between nodes if they are
     adjacent in the same kommun
+    TODO: Test with different edge types, e.g. only connect nodes that are adjacent in the same kommun
 """
 def build_G(df, test):
     G = nx.Graph()
@@ -111,6 +112,7 @@ def get_data(df, G):
     X = []
     Y = []
     Z = []
+    meta = []
     for node in G.nodes():
         kommunid, (latbin, longbin) = node
 
@@ -123,35 +125,37 @@ def get_data(df, G):
         if df_node.empty:
             continue
 
-        X_node = np.array(df_node.drop(['log_slutpris', 'slutpris', 'kommunid', 'lat_bin', 'long_bin'], axis=1))
+        X_node = np.array(df_node.drop(['slutpris', 'log_slutpris','kommunid', 'lat_bin', 'long_bin', 'maeklarobjektid', 'avtalsdag_full', 'xkoordinat', 'ykoordinat'], axis=1))
         Y_node = np.array(df_node['log_slutpris'])
         
         N = X_node.shape[0]
         X += [X_node]
         Y += [Y_node]
         Z.extend([(kommunid, (latbin, longbin))] * N)
+        meta.append(df_node[['kommunid', 'maeklarobjektid', 'avtalsdag_full', 'xkoordinat', 'ykoordinat']])
     
-    return np.concatenate(X, axis=0), np.concatenate(Y, axis=0)[:, np.newaxis], Z
+    save_cols_filtered = pd.concat(meta, ignore_index=True)
+    return np.concatenate(X, axis=0), np.concatenate(Y, axis=0)[:, np.newaxis], Z, save_cols_filtered
 
 
 """ 
     Splits data into training and testing sets
 """
 def split_data(df, G, test_size=0.2, val_size=0.1):
-    print("ELLO MATE")
+    print("Splitting data...")
     df_train, df_test = train_test_split(df)
     print(f"df_train size: {len(df_train)}, df_test size: {len(df_test)}")
     df_train, df_val = train_test_split(df_train)
     print(f"df_train size: {len(df_train)}, df_val size: {len(df_val)}")
-    X_train, Y_train, Z_train = get_data(df_train, G)
-    X_test, Y_test, Z_test = get_data(df_test, G)
-    X_val, Y_val, Z_val = get_data(df_val, G)
+    X_train, Y_train, Z_train, _ = get_data(df_train, G)
+    X_test, Y_test, Z_test, save_cols  = get_data(df_test, G)
+    X_val, Y_val, Z_val, _ = get_data(df_val, G)
 
     data_train = dict(X=X_train, Y=Y_train, Z=Z_train)
     data_test = dict(X=X_test, Y=Y_test, Z=Z_test)
     data_val = dict(X=X_val, Y=Y_val, Z=Z_val)
 
-    return data_train, data_val, data_test
+    return data_train, data_val, data_test, save_cols
         
 
 """ Format Y depending on loss function"""
@@ -163,6 +167,7 @@ def format_Y(Y, loss_name):
 
 
 """ Sets the loss and regularizer functions + parameters from the arguments by reading from the config file.
+    TODO: Fix an actual config file
 """
 def setup_sm(loss, reg):
     with open('config.json', 'r') as f:
@@ -176,8 +181,6 @@ def setup_sm(loss, reg):
         "sum_squares_reg": sum_squares_reg,
         "L2_reg": L2_reg,
         "zero_reg": zero_reg,
-        "mtx_scaled_sum_squares_reg": mtx_scaled_sum_squares_reg,
-        "mtx_scaled_plus_sum_squares_reg": mtx_scaled_plus_sum_squares_reg,
         "scaled_plus_sum_squares_reg": scaled_plus_sum_squares_reg,
         "L1_reg": L1_reg,
         "elastic_net_reg": elastic_net_reg,
@@ -217,17 +220,18 @@ def create_sm(G, loss, reg, train_data, weight=15):
 
 
 """ Tuning hyperparameters
+    TODO: Add more hyperparameters to tune
 """
 def tune_hyperparameters(df, G, num_trials=10):
-    train_data, val_data, _ = split_data(df, G, stratify_feature=True)
+    train_data, val_data, _, _ = split_data(df, G, stratify_feature=True)
 
     best_score = float('inf')
     best_params = None
 
     for _ in range(num_trials):
         # Randomly sample hyperparameters
-        reg_type = random.choice(["L2", "sum_squares", "L2", "zero", "elastic_net_reg", "mtx_scaled_sum_squares_reg", "mtx_scaled_plus_sum_squares_reg", "scaled_plus_sum_squares_reg"])
-        loss_type = random.choice(["sum_squares", "logistic"])
+        reg_type = random.choice(["L2", "sum_squares", "L2", "zero", "elastic_net_reg", "scaled_plus_sum_squares_reg"])
+        loss_type = random.choice(["sum_squares"])
 
         print(f"Trying loss={loss_type}, reg={reg_type}")
         
@@ -266,6 +270,27 @@ def save_model(model, loss_name, reg_name, weight=15):
 
     print(f"Model saved as {filename} (Loss: {loss_name}, Reg: {reg_name})")
     return filename
+
+"""
+    Generates a result file
+"""
+def gen_result_csv(y_pred, y_true, saved_cols):
+    y_pred = y_pred.flatten()
+    y_true = y_true.flatten()
+
+    results = saved_cols.copy()
+    results['slutpris (kr)'] = np.exp(y_true)
+    results['prediction (kr)'] = np.exp(y_pred)
+    # Percentual difference between actual and predicted value:
+    results['diff (%)'] = (
+    (results['prediction (kr)'] - results['slutpris (kr)']) / results['slutpris (kr)']
+        ) * 100
+    
+    results["diff (%)"] = results["diff (%)"].round(2)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+    results.to_csv(f'results_from_training/result_file_{timestamp}.csv', index=False)
+    print("Successfully generated result file")
 
 """
     Tunes the edge weights of the graph G,
@@ -311,24 +336,9 @@ def tune_edge_weight(df, G, weight_candidates, loss, reg, loss_name, reg_name):
             print(f"New best weight: {best_weight} with average RMSE: {best_avg_rmse:.6f}")
     
     results_df = pd.DataFrame(results)
-    results_df.to_csv('results_from_training/edge_weights_RMSE.csv', index=False)
+    results_df.to_csv('results_from_training/edge_weights_RMSE_2.csv', index=False)
     print(f"Best edge weight: {best_weight} based on 5-fold CV with average RMSE: {best_avg_rmse:.6f}")
     
-    """ 
-        for weight in weight_candidates:
-            print(f"Trying edge weight: {weight}")
-            model = create_sm(G, loss, reg, train_data, weight)
-            # Fit the model
-            
-            model.fit(train_data, **kwargs)
-            score = model.scores(val_data)
-            print(f"Validation Loss for weight {weight}: {score}")
-            if score < best_score:
-                best_score = score
-                best_weight = weight
-            
-        print(f"Best edge weight: {best_weight} with validation loss: {best_score}") 
-        """
     model_filename = save_model(model, loss_name, reg_name, best_weight)
     print(f'Model saved as {model_filename}')
     return best_weight
@@ -352,7 +362,7 @@ def retrain(df, test, regraph):
 
     
     print('Splitting data...')
-    train_data, val_data, test_data = split_data(df, G)
+    train_data, val_data, test_data, save_cols = split_data(df, G)
     print('Creating Stratified Model')
     loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
 
@@ -360,7 +370,7 @@ def retrain(df, test, regraph):
     val_data["Y"] = format_Y(val_data["Y"], loss_name)
     test_data["Y"] = format_Y(test_data["Y"], loss_name)
 
-    sm_strat = create_sm(G, loss, reg, train_data)
+    sm_strat = create_sm(G, loss, reg, train_data, 0.1)
     Z = train_data['Z']
    
     kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=1000, n_jobs=1, verbose=True)
@@ -387,18 +397,21 @@ def retrain(df, test, regraph):
     with torch.no_grad():
         y_pred = sm_strat.predict(test_data) # Get predictions
     
-    y_pred_np = y_pred.cpu().numpy()
-    y_true_np = test_data['Y'].cpu().numpy()
+    y_pred_np = y_pred
+    y_true_np = test_data['Y']
 
     rmse = np.sqrt(mean_squared_error(y_true_np, y_pred_np))
     r2 = r2_score(y_true_np, y_pred_np)
     print(f"RMSE: {rmse:.4f}")
     print(f"R2: {r2:.4f}")
 
+    # Generate result file
+    gen_result_csv(y_pred_np, y_true_np, save_cols)
+
 """
     Tune hyperparameters with k-fold cross-validation
 """
-def tune_model(df, edges, test):
+def tune_model(df, edges, test, hyper):
     if test:
         G_filepath = 'results_from_training/laplacian_graph_TEST.pkl'
     else:
@@ -409,7 +422,7 @@ def tune_model(df, edges, test):
     
 
     print('Splitting data...')
-    train_data, val_data, test_data = split_data(df, G)
+    train_data, val_data, test_data, _ = split_data(df, G)
     print('Creating Stratified Model')
     loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
 
@@ -419,10 +432,43 @@ def tune_model(df, edges, test):
 
     if edges:
         print("Tuning edge weights...")
-        weight_candidates = [0.05, 0.07, 0.09, 0.11]
+        weight_candidates = [0.1, 5, 10, 15, 20, 25]
         best_weight = tune_edge_weight(df, G, weight_candidates, loss, reg, loss_name, reg_name)
         print(f"Best edge weight: {best_weight}")
 
+    if hyper:
+        results = []
+        best_score = float('inf')
+        best_params = None
+
+        for _ in range(10):
+            # Randomly sample hyperparameters
+            reg_type = random.choice(["L2", "sum_squares", "zero", "elastic_net", "scaled_plus_sum_squares"])
+            loss_type = random.choice(["sum_squares"])
+
+            print(f"Trying loss={loss_type}, reg={reg_type}")
+            
+            loss, reg, loss_name, reg_name = setup_sm(loss_type, reg_type)
+            sm_strat = create_sm(G, loss, reg, train_data)
+            kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=300, n_jobs=1, verbose=True)
+            sm_strat.fit(train_data, **kwargs)
+            val_score = sm_strat.scores(val_data)
+            print(f"Validation Loss: {val_score}")
+            results.append({'loss': loss, 'reg': reg, 'score': val_score})
+            
+            if val_score < best_score:
+                best_score = val_score
+                best_params = (loss_type, reg_type)
+        
+        results_df = pd.DataFrame(results)
+        results_df.to_csv('results_from_training/hyperparameters_RMSE.csv', index=False)
+        print(f"Best Validation Loss: {best_score}")
+        loss_name = best_params[0]
+        reg_name = best_params[1]
+        model_filename = save_model(sm_strat, loss_name, reg_name)
+        print(f"Model saved as {model_filename}")
+
+        
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train and test stratified model")
@@ -434,12 +480,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print('Loading data...')
-    df = pd.read_csv('../../preprocessing/standardized_data/final.csv')
-    df.drop(columns=['xkoordinat', 'ykoordinat'], inplace=True, axis=1)
+    df = pd.read_csv('../../preprocessing/standardized_data/final_TEST.csv')
 
     if args.regraph:
         print("Building Laplacian graph...")
         G = build_G(df, args.test)
+    
 
     if args.test:
         print("TEST MODE ENABLED - Using top 3 municipalities only")
@@ -452,6 +498,8 @@ if __name__ == "__main__":
         retrain(df, args.test, args.regraph)
 
     if args.edges:
-        tune_model(df, args.edges, args.test)
-        
-        
+        tune_model(df, args.edges, args.test, args.hyper)
+
+    if args.hyper:
+        tune_model(df, args.edges, args.test, args.hyper)
+    
