@@ -486,7 +486,6 @@ if __name__ == "__main__":
         print("Building Laplacian graph...")
         G = build_G(df, args.test)
     
-
     if args.test:
         print("TEST MODE ENABLED - Using top 3 municipalities only")
         top_kommuner = df['kommunid'].value_counts().nlargest(3).index.to_list()
