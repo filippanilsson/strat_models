@@ -504,7 +504,6 @@ if __name__ == "__main__":
         print("Building Laplacian graph...")
         G = build_G(df, args.test)
     
-
     if args.test:
         print("TEST MODE ENABLED - Using random 30 municipalities with different densities")
         df = split_subset_data(df)
