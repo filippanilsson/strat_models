@@ -38,7 +38,7 @@ from strat_models.utils import *
 
 """ Builds the Laplacian graph G, putting an edge between nodes if they are
     adjacent in the same kommun
-    TODO: Test with different edge types, e.g. only connect nodes that are adjacent in the same kommun
+    TODO: Test with different edge types, e.g. only connect nodes that are adjacent in the same kommun - DONE kind-of?
 """
 def build_G(df, test):
     G = nx.Graph()
@@ -468,7 +468,24 @@ def tune_model(df, edges, test, hyper):
         model_filename = save_model(sm_strat, loss_name, reg_name)
         print(f"Model saved as {model_filename}")
 
-        
+"""
+    Picks out 10 municipalities each from the:
+        - top 33% most populated
+        - middle 33% most populated
+        - bottom 33% most populated
+"""
+def split_subset_data(df):
+    # Split into three density buckets - top 33%, middle 33% and bottom 33%
+    counts = df['kommunid'].value_counts().reset_index()
+    counts.columns = ['kommunid', 'sample_count']
+    counts = counts[counts['sample_count'] >= 100] # Filter out very unpopulated ones
+
+    # Add quantile-based buckets
+    counts['density_bucket'] = pd.qcut(counts['sample_count'], 3, labels=['low', 'medium', 'high'])
+    selected_ids = counts.groupby('density_bucket').sample(n=10)['kommunid'].tolist()
+    df_subset = df[df['kommunid'].isin(selected_ids)]
+
+    return df_subset       
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train and test stratified model")
@@ -477,6 +494,7 @@ if __name__ == "__main__":
     parser.add_argument("--test", action="store_true", help="Test the training on a subset of data to see if the pipeline works", default=False)
     parser.add_argument("--edges", action="store_true", help="Tune edge weights for Laplacian graph", default=False)
     parser.add_argument("--hyper", action="store_true", help="Tune hyperparameters", default=False)
+
     args = parser.parse_args()
 
     print('Loading data...')
@@ -488,10 +506,9 @@ if __name__ == "__main__":
     
 
     if args.test:
-        print("TEST MODE ENABLED - Using top 3 municipalities only")
-        top_kommuner = df['kommunid'].value_counts().nlargest(3).index.to_list()
-        df = df[df['kommunid'].isin(top_kommuner)].copy()
-        print(f"Selected kommuner: {top_kommuner}")
+        print("TEST MODE ENABLED - Using random 30 municipalities with different densities")
+        df = split_subset_data(df)
+
         print(f"Subset size: {len(df)} rows")
 
     if args.retrain:
