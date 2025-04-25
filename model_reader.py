@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 #result = pd.read_csv('../results_from_training/result_file_2025-04-14')
-with open('models/model_2025-04-10_154125.pkl', 'rb') as f:
+with open('models/model_2025-04-23_170152_HeLLAUR.pkl', 'rb') as f:
     model = pickle.load(f)
 
 loss = model['loss']

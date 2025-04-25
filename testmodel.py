@@ -40,7 +40,7 @@ from strat_models.utils import *
     adjacent in the same kommun
     TODO: Test with different edge types, e.g. only connect nodes that are adjacent in the same kommun - DONE kind-of?
 """
-def build_G(df, test):
+def build_G(df, test, egg):
     G = nx.Graph()
     for kommun in df['kommunid'].unique():
         df_kommun = df[df['kommunid'] == kommun] # Filter data for this kommun
@@ -50,16 +50,18 @@ def build_G(df, test):
         for node in bins:
             G.add_node((kommun, node)) # Node = (kommunid, (latbin, longbin))
 
+        mode = None
         # Fully connect all bins within the same kommun, use this for now and check performance of graphs, maybe do based
         # on adjacency later :)
-        bins_list = list(bins)
-        for i in range(len(bins_list)):
-            for j in range(i + 1, len(bins_list)):
-                G.add_edge((kommun, bins_list[i]), (kommun, bins_list[j]))
+        if mode == None:
+            bins_list = list(bins)
+            for i in range(len(bins_list)):
+                for j in range(i + 1, len(bins_list)):
+                    G.add_edge((kommun, bins_list[i]), (kommun, bins_list[j]))
 
-        mode = None
         # Option 1: Use only spatial adjacency across all bins
-        if mode is not None:
+        if mode == 'adjacent':
+            print("Adjacent connections...")
             df['node'] = list(zip(df['kommunid'], zip(df['lat_bin'], df['long_bin'])))
             unique_nodes = df['node'].unique()
             bin_to_nodes = {}
@@ -81,19 +83,19 @@ def build_G(df, test):
                             for node_b in bin_to_nodes[neighbor_bin]:
                                 G.add_edge(node_a, node_b)
             
-            # Optional: add full intra-kommun connectivity
-            # Meaning, all nodes within a kommun are connected, as well as neighboring bins across kommuner
-            # lambda will be fixed, no need to weight the edges differently for simplicity
-            if mode == 'adjacent+intra':
-                for kommun in df['kommun'].unique():
-                    kommun_nodes = [node for node in G.nodes if node[0] == kommun]
-                    for i in range(len(kommun_nodes)):
-                        for j in range(i + 1, len(kommun_nodes)):
-                            G.add_edge(kommun_nodes[i], kommun_nodes[j])
+        # Optional: add full intra-kommun connectivity
+        # Meaning, all nodes within a kommun are connected, as well as neighboring bins across kommuner
+        # lambda will be fixed, no need to weight the edges differently for simplicity
+        if mode == 'adjacent+intra':
+            for kommun in df['kommunid'].unique():
+                kommun_nodes = [node for node in G.nodes if node[0] == kommun]
+                for i in range(len(kommun_nodes)):
+                    for j in range(i + 1, len(kommun_nodes)):
+                        G.add_edge(kommun_nodes[i], kommun_nodes[j])
     # Ensure the directory exists
     os.makedirs('results_from_training', exist_ok=True) 
     
-    if test:
+    if test or egg:
         with open('results_from_training/laplacian_graph_TEST.pkl', 'wb') as f:
             pickle.dump(G, f)
         print("Saved Laplacian graph to 'results_from_training/laplacian_graph_TEST.pkl' ")
@@ -125,14 +127,22 @@ def get_data(df, G):
         if df_node.empty:
             continue
 
-        X_node = np.array(df_node.drop(['slutpris', 'log_slutpris','kommunid', 'lat_bin', 'long_bin', 'maeklarobjektid', 'avtalsdag_full', 'xkoordinat', 'ykoordinat'], axis=1))
-        Y_node = np.array(df_node['log_slutpris'])
+        # Drop non-feature columns
+        features_df = df_node.drop(['slutpris', 'log_slutpris', 'kommunid', 'lat_bin', 'long_bin', 'xkoordinat', 'ykoordinat', 'avtalsdag_full', 'maeklarobjektid'], axis=1)
+        
+        # Convert all features to numeric; non-convertible values become NaN.
+        #features_df = features_df.apply(pd.to_numeric, errors='coerce')
+        
+        # Ensure the result is a NumPy array of type float64
+        #X_node = features_df.astype(np.float64).values
+        X_node = np.array(features_df)
+        Y_node = np.array(df_node['log_slutpris'], dtype=np.float64)
         
         N = X_node.shape[0]
         X += [X_node]
         Y += [Y_node]
         Z.extend([(kommunid, (latbin, longbin))] * N)
-        meta.append(df_node[['kommunid', 'maeklarobjektid', 'avtalsdag_full', 'xkoordinat', 'ykoordinat']])
+        meta.append(df_node[['kommunid','xkoordinat','ykoordinat','avtalsdag_full','maeklarobjektid']])
     
     save_cols_filtered = pd.concat(meta, ignore_index=True)
     return np.concatenate(X, axis=0), np.concatenate(Y, axis=0)[:, np.newaxis], Z, save_cols_filtered
@@ -209,7 +219,7 @@ def setup_sm(loss, reg):
 
 """ Creates the Stratified Model and prepares the graph weights
 """
-def create_sm(G, loss, reg, train_data, weight=15):
+def create_sm(G, loss, reg, train_data, weight=0.1):
     Z_train = train_data['Z']
     bm = BaseModel(loss=loss, reg=reg)
 
@@ -254,7 +264,7 @@ def tune_hyperparameters(df, G, num_trials=10):
 """ Save the model"""
 def save_model(model, loss_name, reg_name, weight=15):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    filename = f'models/model_{timestamp}.pkl'
+    filename = f'models/model_{timestamp}_HeLLAUR.pkl'
 
     # Save metadata
     model_data = {
@@ -301,7 +311,7 @@ def tune_edge_weight(df, G, weight_candidates, loss, reg, loss_name, reg_name):
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
     best_avg_rmse = float('inf')
     best_weight = None
-    kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=300, n_jobs=1, verbose=True)
+    kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=100, n_jobs=1, verbose=True)
 
     results = []
     for weight in weight_candidates:
@@ -309,12 +319,13 @@ def tune_edge_weight(df, G, weight_candidates, loss, reg, loss_name, reg_name):
         print(f"Trying edge weight: {weight}")
 
         for fold, (train_index, val_index) in enumerate(kf.split(df), 1):
+            print(f"On fold: {fold}")
             df_train = df.iloc[train_index].copy()
             df_val = df.iloc[val_index].copy()
 
             # Prepare training and validationd data
-            X_train, Y_train, Z_train = get_data(df_train, G)
-            X_val, Y_val, Z_val = get_data(df_val, G)
+            X_train, Y_train, Z_train, _ = get_data(df_train, G)
+            X_val, Y_val, Z_val, _ = get_data(df_val, G)
             train_data = dict(X=X_train, Y=Y_train, Z=Z_train)
             val_data = dict(X=X_val, Y=Y_val, Z=Z_val)
 
@@ -346,11 +357,11 @@ def tune_edge_weight(df, G, weight_candidates, loss, reg, loss_name, reg_name):
 """
     Retrain the model from scratch
 """
-def retrain(df, test, regraph):
+def retrain(df, test, regraph, egg):
     
     if regraph:
         print("Building Laplacian graph...")
-        G = build_G(df, args.test)
+        G = build_G(df, test, egg)
     else:
         if test:
             G_filepath = 'results_from_training/laplacian_graph_TEST.pkl'
@@ -373,7 +384,7 @@ def retrain(df, test, regraph):
     sm_strat = create_sm(G, loss, reg, train_data, 0.1)
     Z = train_data['Z']
    
-    kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=1000, n_jobs=1, verbose=True)
+    kwargs = dict(rel_tol=1e-5, abs_tol=1e-5, maxiter=300, n_jobs=1, verbose=True)
     from multiprocessing import freeze_support
     freeze_support()
 
@@ -411,8 +422,8 @@ def retrain(df, test, regraph):
 """
     Tune hyperparameters with k-fold cross-validation
 """
-def tune_model(df, edges, test, hyper):
-    if test:
+def tune_model(df, edges, test, hyper, egg):
+    if test or egg:
         G_filepath = 'results_from_training/laplacian_graph_TEST.pkl'
     else:
         G_filepath = 'results_from_training/laplacian_graph.pkl'
@@ -432,7 +443,7 @@ def tune_model(df, edges, test, hyper):
 
     if edges:
         print("Tuning edge weights...")
-        weight_candidates = [0.1, 5, 10, 15, 20, 25]
+        weight_candidates = [0.1, 0.5, 1, 2, 5]
         best_weight = tune_edge_weight(df, G, weight_candidates, loss, reg, loss_name, reg_name)
         print(f"Best edge weight: {best_weight}")
 
@@ -486,6 +497,7 @@ def split_subset_data(df):
     df_subset = df[df['kommunid'].isin(selected_ids)]
 
     return df_subset       
+        
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train and test stratified model")
@@ -494,15 +506,15 @@ if __name__ == "__main__":
     parser.add_argument("--test", action="store_true", help="Test the training on a subset of data to see if the pipeline works", default=False)
     parser.add_argument("--edges", action="store_true", help="Tune edge weights for Laplacian graph", default=False)
     parser.add_argument("--hyper", action="store_true", help="Tune hyperparameters", default=False)
-
+    parser.add_argument("--egg", action="store_true", help="Tune edge weights for low-density municipalities", default=False)
     args = parser.parse_args()
 
     print('Loading data...')
-    df = pd.read_csv('../../preprocessing/standardized_data/final_TEST.csv')
+    df = pd.read_csv('../../preprocessing/standardized_data/final.csv')
 
     if args.regraph:
         print("Building Laplacian graph...")
-        G = build_G(df, args.test)
+        G = build_G(df, args.test, args.egg)
     
     if args.test:
         print("TEST MODE ENABLED - Using random 30 municipalities with different densities")
@@ -510,11 +522,21 @@ if __name__ == "__main__":
 
         print(f"Subset size: {len(df)} rows")
 
+    if args.egg:
+        print("TEST MODE ENABLED - Using low-density municipalities only")
+        bottom_kommuner = df['kommunid'].value_counts().nsmallest(150)
+        for kommunid, count in bottom_kommuner.items():
+            print(f"KommunID: {kommunid}, Count: {count}")
+        bottom_kommuner = bottom_kommuner.index.to_list()
+        df = df[df['kommunid'].isin(bottom_kommuner)].copy()
+        print(f"Subset size: {len(df)} rows")
+    
+
     if args.retrain:
-        retrain(df, args.test, args.regraph)
+        retrain(df, args.test, args.regraph, args.egg)
 
     if args.edges:
-        tune_model(df, args.edges, args.test, args.hyper)
+        tune_model(df, args.edges, args.test, args.hyper, args.egg)
 
     if args.hyper:
         tune_model(df, args.edges, args.test, args.hyper)
