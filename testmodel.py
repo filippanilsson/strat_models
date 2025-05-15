@@ -147,6 +147,39 @@ def get_data(df, G):
     save_cols_filtered = pd.concat(meta, ignore_index=True)
     return np.concatenate(X, axis=0), np.concatenate(Y, axis=0)[:, np.newaxis], Z, save_cols_filtered
 
+"""
+    Calculates the node density of the graph G, to use for dynamic edge weights
+"""
+def calc_node_density(df, train_data, G):
+    density_dict = {}
+    train_nodes = set(train_data['Z'])
+    
+    for node in train_nodes:
+        kommunid, (latbin, longbin) = node
+
+        df_node = df.loc[
+            (df['kommunid'] == kommunid) &
+            (df['lat_bin'] == latbin) &
+            (df['long_bin'] == longbin)
+        ]
+
+        density_dict[node] = len(df_node)
+    return density_dict
+
+
+"""
+    Calculates dynamic edge weights
+"""
+def set_dynamic_edge_weight(G, density_dict):
+    for u, v, e in G.edges(data=True):
+        density_u = density_dict.get(u, 1)
+        density_v = density_dict.get(v, 1)
+
+        weight = 1 / (1 + (density_u * density_v) / 2)
+        
+        e['weight'] = weight
+
+    return G
 
 """ 
     Splits data into training and testing sets
@@ -223,7 +256,10 @@ def create_sm(G, loss, reg, train_data, weight=0.1):
     Z_train = train_data['Z']
     bm = BaseModel(loss=loss, reg=reg)
 
-    set_edge_weight(G, weight)
+    #density_dict = calc_node_density(train_data, G)
+    #set_dynamic_edge_weight(G, density_dict)
+
+    #set_edge_weight(G, weight)
     sm_strat = StratifiedModel(bm, graph=G)
     
     return sm_strat
@@ -234,6 +270,8 @@ def create_sm(G, loss, reg, train_data, weight=0.1):
 """
 def tune_hyperparameters(df, G, num_trials=10):
     train_data, val_data, _, _ = split_data(df, G, stratify_feature=True)
+    density_dict = calc_node_density(train_data, G)
+    G = set_dynamic_edge_weight(df, G, density_dict)
 
     best_score = float('inf')
     best_params = None
@@ -328,6 +366,8 @@ def tune_edge_weight(df, G, weight_candidates, loss, reg, loss_name, reg_name):
             X_val, Y_val, Z_val, _ = get_data(df_val, G)
             train_data = dict(X=X_train, Y=Y_train, Z=Z_train)
             val_data = dict(X=X_val, Y=Y_val, Z=Z_val)
+            density_dict = calc_node_density(train_data, G)
+            G = set_dynamic_edge_weight(df, G, density_dict)
 
             model = create_sm(G, loss, reg, train_data, weight=weight)
             model.fit(train_data, **kwargs)
@@ -380,6 +420,8 @@ def retrain(df, test, regraph, egg):
     train_data["Y"] = format_Y(train_data["Y"], loss_name)
     val_data["Y"] = format_Y(val_data["Y"], loss_name)
     test_data["Y"] = format_Y(test_data["Y"], loss_name)
+    density_dict = calc_node_density(df, train_data, G)
+    G = set_dynamic_edge_weight(G, density_dict)
 
     sm_strat = create_sm(G, loss, reg, train_data, 0.1)
     Z = train_data['Z']
@@ -434,6 +476,9 @@ def tune_model(df, edges, test, hyper, egg):
 
     print('Splitting data...')
     train_data, val_data, test_data, _ = split_data(df, G)
+    density_dict = calc_node_density(df, train_data, G)
+    G = set_dynamic_edge_weight(G, density_dict)
+
     print('Creating Stratified Model')
     loss, reg, loss_name, reg_name = setup_sm("sum_squares", "L2")
 
